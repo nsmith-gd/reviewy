@@ -132,6 +132,13 @@ export class Worker {
     ws.on('close', (code, reason) => {
       if (this.stopped) return;
       if (code === 4003) return; // revoked; onMessage('revoked') decides what next
+      if (code === 4000) {
+        // Another worker with the same pairing connected. Reconnecting would just knock it off again, forever.
+        this.log('Another Debrief worker with the same pairing connected to the hub, so this one is stopping. Run only one worker per pairing (see `debrief service status`).');
+        this.stop();
+        this.opts.onReplaced?.();
+        return;
+      }
       const wait = this.backoff;
       this.backoff = Math.min(this.backoff * 2, 60_000);
       this.log(`disconnected from hub (${code}${reason?.length ? ` ${reason}` : ''}); retrying in ${Math.round(wait / 1000)}s`);

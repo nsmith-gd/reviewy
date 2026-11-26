@@ -5,12 +5,16 @@ import { configPath, loadConfig, saveConfig } from '../src/config.mjs';
 import { diagnoseTranscript } from '../src/diagnose.mjs';
 import { doctor, installWhisper } from '../src/doctor.mjs';
 import { startHub, startSolo, startWorker, unlink } from '../src/run.mjs';
+import { installService, serviceStatus, startService, stopService, tailLog, uninstallService } from '../src/service.mjs';
 import { VERSION } from '../src/version.mjs';
 
 const HELP = `debrief ${VERSION}: video review notes in Discord from your own Claude Code
 
 Usage:
-  debrief worker [--hub <url>] [--name <name>]   Run your worker (pairs on first run)
+  debrief worker [--hub <url>] [--name <name>]   Run your worker in this window (pairs on first run)
+  debrief service install [--solo]               Run it in the background and start it at login
+  debrief service status | stop | start | uninstall
+  debrief logs [lines]                           Show the background worker's log
   debrief solo [--token <bot token>]             Hub + worker in one process, with your own bot
   debrief hub [--token <bot token>] [--port N]   Run the team hub (Discord bot + worker server)
   debrief doctor [--deep]                        Check dependencies (--deep also tests the Claude login)
@@ -38,12 +42,12 @@ function parseValue(v) {
 try {
   switch (cmd) {
     case 'worker': {
-      const { values } = opts({ hub: { type: 'string' }, name: { type: 'string' } });
+      const { values } = opts({ hub: { type: 'string' }, name: { type: 'string' }, log: { type: 'string' } });
       await startWorker(values);
       break;
     }
     case 'solo': {
-      const { values } = opts({ token: { type: 'string' } });
+      const { values } = opts({ token: { type: 'string' }, log: { type: 'string' } });
       await startSolo(values);
       break;
     }
@@ -69,6 +73,20 @@ try {
       await diagnoseTranscript(positionals[0], { language: values.language, glossary: (values.glossary || '').split(',').map((x) => x.trim()).filter(Boolean), keep: values.keep });
       break;
     }
+    case 'service': {
+      const { values, positionals } = opts({ solo: { type: 'boolean' } });
+      const sub = positionals[0];
+      if (sub === 'install') await installService({ solo: values.solo });
+      else if (sub === 'uninstall') await uninstallService();
+      else if (sub === 'stop') await stopService();
+      else if (sub === 'start') console.log(`Started (process ${await startService()}).`);
+      else if (sub === 'status') serviceStatus();
+      else throw new Error('Usage: debrief service install [--solo] | status | stop | start | uninstall');
+      break;
+    }
+    case 'logs':
+      console.log(tailLog(Number(rest[0]) || 60) || 'No log yet. The log is written when the worker runs in the background (debrief service install).');
+      break;
     case 'config': {
       const [key, value] = rest;
       if (!key) {
