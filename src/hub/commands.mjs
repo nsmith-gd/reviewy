@@ -64,7 +64,7 @@ export const COMMANDS = [
               { type: STRING, name: 'departments', description: 'Areas, comma-separated (default: gameplay, art, audio, backend, other)', required: false, max_length: 300 },
               { type: STRING, name: 'guidance', description: 'House style and what the team cares about', required: false, max_length: 1500 },
               { type: STRING, name: 'language', description: 'Whisper language code, e.g. en, fr, auto', required: false, max_length: 8 },
-              { type: CHANNEL, name: 'default_channel', description: 'Where review threads go when a command is used outside a text channel', required: false, channel_types: TEXT_CHANNELS },
+              { type: CHANNEL, name: 'default_channel', description: 'Where review threads go when a command is used outside a text channel', required: false, channel_types: [0, 5] },
             ],
           },
           { type: SUB, name: 'remove-project', description: 'Delete a project', options: [{ type: STRING, name: 'name', description: 'Project', required: true, autocomplete: true }] },

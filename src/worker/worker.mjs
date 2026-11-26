@@ -64,7 +64,7 @@ export class Worker {
     this.cfg = opts.cfg || loadConfig();
     this.log = opts.log || ((...a) => console.log('[worker]', ...a));
     this.running = new Map(); // jobId → AbortController
-    this.unsent = new Map(); // jobId → result/failed message waiting for a connection
+    this.finished = new Map(); // jobId → {outcome, at}: kept until the hub confirms it posted the result
     this.stopped = false;
     this.backoff = 1000;
   }
@@ -117,7 +117,7 @@ export class Worker {
         version: VERSION,
         capacity: this.cfg.maxConcurrentJobs || 1,
         caps: this.caps,
-        running: [...this.running.keys(), ...this.unsent.keys()],
+        running: [...this.running.keys(), ...this.finished.keys()],
       });
     });
     ws.on('message', (data) => {
@@ -182,6 +182,7 @@ export class Worker {
         this.running.get(msg.jobId)?.abort();
         break;
       case 'posted':
+        this.finished.delete(msg.jobId);
         deleteVideo(jobDir(this.cfg, msg.jobId));
         break;
       case 'request':
@@ -190,12 +191,24 @@ export class Worker {
     }
   }
 
+  /** Re-send outcomes the hub may have missed while we were disconnected. The hub ignores duplicates. */
   flushUnsent() {
-    for (const [jobId, m] of this.unsent) if (this.send(m.type, m.body)) this.unsent.delete(jobId);
+    const now = Date.now();
+    for (const [jobId, f] of this.finished) {
+      const maxAge = f.outcome.type === 'result' ? 86400_000 : 15 * 60_000;
+      if (now - f.at > maxAge) this.finished.delete(jobId);
+      else this.send(f.outcome.type, f.outcome.body);
+    }
   }
 
   async runJob(job) {
     if (this.running.has(job.id)) return;
+    // Already finished (e.g. while offline, and the hub requeued it meanwhile): send the outcome, don't redo it.
+    const done = this.finished.get(job.id);
+    if (done) {
+      this.send(done.outcome.type, done.outcome.body);
+      return;
+    }
     const ac = new AbortController();
     this.running.set(job.id, ac);
     const who = job.pool ? `${job.requester} (pool)` : job.requester;
@@ -226,7 +239,8 @@ export class Worker {
     } finally {
       this.running.delete(job.id);
     }
-    if (!this.send(outcome.type, outcome.body)) this.unsent.set(job.id, outcome);
+    this.finished.set(job.id, { outcome, at: Date.now() });
+    this.send(outcome.type, outcome.body);
   }
 
   async onRequest(msg) {
@@ -261,6 +275,9 @@ export class Worker {
    * but only the tools listed in tracker.allowedTools, and only sees the structured feedback JSON.
    */
   async exportToTracker(cached, msg) {
+    if (cached.meta.pool) {
+      throw new Error('This review ran on a pool worker. Tracker export runs with the worker owner\'s own accounts, so it is only available on your own worker.');
+    }
     const t = this.cfg.tracker || {};
     if (!t.allowedTools?.length) {
       throw new Error('Tracker export is not set up on this worker. Add tracker.allowedTools (and tracker.mcpConfig if needed) to ~/.debrief/config.json — see the README.');

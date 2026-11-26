@@ -192,3 +192,15 @@ test('windows npm .cmd shims resolve to the real script', async () => {
   assert.equal(parseCmdShim('@"%~dp0\\node_modules\\x\\bin\\claude.exe" %*'), 'node_modules/x/bin/claude.exe');
   assert.equal(parseCmdShim('echo hi'), null);
 });
+
+test('IPv6 private ranges and pinned-lookup refusal', async () => {
+  for (const ip of ['64:ff9b::a00:1', '64:ff9b::10.0.0.1', '2002:a00:1::1', 'fec0::1', '::10.0.0.1', '::127.0.0.1', 'fe80::1%eth0', 'ff02::1']) {
+    assert.equal(isPrivateAddress(ip), true, ip);
+  }
+  assert.equal(isPrivateAddress('64:ff9b::8.8.8.8'), false);
+  const { safeFetch } = await import('../src/pipeline/fetch.mjs');
+  await assert.rejects(safeFetch('https://localhost/x.mp4', { allowedHosts: ['localhost'] }), /private or local/);
+  await assert.rejects(safeFetch('https://127.0.0.1/x.mp4', { allowedHosts: ['127.0.0.1'] }), /private or local/);
+  await assert.rejects(safeFetch('https://evil.example/x.mp4'), /allowlist/);
+  await assert.rejects(safeFetch('http://youtube.com/x'), /non-https/);
+});

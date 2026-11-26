@@ -81,7 +81,7 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
   } else {
     // 1. Fetch
     progress('downloading', { pct: 0 });
-    const got = await fetchSource(job.source, dir, { cfg, signal, onProgress: (pct) => progress('downloading', { pct }) });
+    const got = await fetchSource(job.source, dir, { cfg, signal, pool: Boolean(job.pool), onProgress: (pct) => progress('downloading', { pct }) });
     videoFile = got.file;
     // 2. Probe
     info = await probe(videoFile, { signal });
@@ -181,6 +181,7 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
     context: job.context || '',
     reviewer: job.reviewer || '',
     project: project.name || '',
+    pool: Boolean(job.pool),
     model: runInfo?.model || model,
     profile: runInfo?.profile,
     costUsd: runInfo?.costUsd,

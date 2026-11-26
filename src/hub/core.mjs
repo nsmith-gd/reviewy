@@ -187,16 +187,30 @@ export class HubCore {
         conn.ws.close(4003, 'bad token');
         return;
       }
+      if (msg.unlink) {
+        // `debrief unlink`: drop the pairing without taking over the running worker's session.
+        this.log(`worker ${w.name} unlinked itself`);
+        this.unpair(id, 'Unlinked with `debrief unlink`.');
+        this.send(conn, 'revoked', { reason: 'Unlinked.' });
+        conn.ws.close(4003, 'unlinked');
+        return;
+      }
       const old = this.conns.get(id);
       conn.authed = true;
       conn.workerId = id;
       this.conns.set(id, conn);
-      if (old && old !== conn) old.ws.close(4000, 'replaced by a new connection');
-      // Reclaim reviews this worker is still running; requeue the ones it lost (e.g. it restarted).
+      if (old && old !== conn) {
+        this.rejectRequests(old, 'The worker reconnected; please try again.');
+        old.ws.close(4000, 'replaced by a new connection');
+      }
+      // Reclaim reviews this worker still has (running, or finished while it was offline, even if the hub
+      // requeued them after the grace period); requeue the ones it lost (e.g. it restarted).
       const running = new Set(Array.isArray(msg.running) ? msg.running : []);
-      for (const job of this.store.jobs((j) => j.workerId === id && j.status === 'running')) {
+      for (const job of this.store.jobs((j) => (j.workerId === id && j.status === 'running') || (j.status === 'queued' && j.lastWorkerId === id && running.has(j.id)))) {
         if (running.has(job.id)) {
           delete job.orphanedAt;
+          job.status = 'running';
+          job.workerId = id;
           conn.busy.add(job.id);
           this.store.putJob(job);
         } else {
@@ -224,17 +238,11 @@ export class HubCore {
 
   onDisconnect(conn) {
     if (conn.code) this.pending.delete(conn.code);
+    this.rejectRequests(conn, 'The worker went offline.');
     if (!conn.workerId || this.conns.get(conn.workerId) !== conn) return;
     this.conns.delete(conn.workerId);
     const w = this.workers[conn.workerId];
     if (w) w.lastSeen = Date.now();
-    for (const [id, r] of this.requests) {
-      if (r.workerId === conn.workerId) {
-        clearTimeout(r.timer);
-        this.requests.delete(id);
-        r.reject(new Error('The worker went offline.'));
-      }
-    }
     // Jobs it was running wait a short grace period for it to reconnect, then go back in the queue (sweep()).
     for (const job of this.store.jobs((j) => j.workerId === conn.workerId && j.status === 'running')) {
       job.orphanedAt = Date.now();
@@ -244,9 +252,21 @@ export class HubCore {
     this.dispatch();
   }
 
-  requeue(job, why) {
+  rejectRequests(conn, message) {
+    for (const [id, r] of this.requests) {
+      if (r.conn === conn) {
+        clearTimeout(r.timer);
+        this.requests.delete(id);
+        r.reject(new Error(message));
+      }
+    }
+  }
+
+  requeue(job, why, { delayMs = 0 } = {}) {
     job.attempts = (job.attempts || 0) + 1;
+    if (job.workerId) job.lastWorkerId = job.workerId;
     job.workerId = null;
+    job.notBefore = delayMs ? Date.now() + delayMs : 0;
     job.waitingNotified = false;
     delete job.orphanedAt;
     if (job.attempts >= MAX_ATTEMPTS) {
@@ -422,7 +442,8 @@ export class HubCore {
   }
 
   async dispatchLoop() {
-    const queued = this.store.jobs((j) => j.status === 'queued').sort((a, b) => a.createdAt - b.createdAt);
+    const now = Date.now();
+    const queued = this.store.jobs((j) => j.status === 'queued' && !(j.notBefore > now)).sort((a, b) => a.createdAt - b.createdAt);
     for (const job of queued) {
       const pick = this.pickWorker(job);
       if (!pick) {
@@ -446,13 +467,21 @@ export class HubCore {
         payload = (await this.front.prepareJob?.(job)) || { id: job.id, source: job.source, context: job.context, frames: job.frames };
       } catch (err) {
         conn.busy.delete(job.id);
+        if (this.store.job(job.id)?.status !== 'queued') continue;
+        if (err.transient) {
+          // e.g. a Discord API hiccup: try again in a minute (counts as an attempt).
+          this.requeue(job, `Couldn't prepare the review (${err.message}).`, { delayMs: 60_000 });
+          continue;
+        }
         job.status = 'failed';
         job.error = err.message;
+        job.finishedAt = Date.now();
         this.store.putJob(job);
         this.front.onFailed?.(job, err.message);
         continue;
       }
-      if (!this.conns.has(pick.worker.id) || this.store.job(job.id)?.status !== 'queued') {
+      // The worker may have dropped or reconnected (a new connection) while we awaited.
+      if (this.conns.get(pick.worker.id) !== conn || this.store.job(job.id)?.status !== 'queued') {
         conn.busy.delete(job.id);
         continue;
       }
@@ -501,7 +530,7 @@ export class HubCore {
         this.requests.delete(reqId);
         reject(new Error('The worker took too long to answer.'));
       }, timeoutMs);
-      this.requests.set(reqId, { resolve, reject, timer, workerId });
+      this.requests.set(reqId, { resolve, reject, timer, workerId, conn });
       this.send(conn, 'request', { reqId, kind, ...body });
     });
   }
@@ -522,6 +551,7 @@ export class HubCore {
         this.store.save();
       }
     }
+    this.dispatch(); // picks up jobs whose retry delay has passed
   }
 
   status(userId) {

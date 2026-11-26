@@ -123,7 +123,12 @@ export class DiscordFront {
         const att = msg.attachments.get(job.sourceMessage.attachmentId) || msg.attachments.find(isVideoAttachment);
         if (att) source = { ...source, kind: 'discord', url: att.url };
       } catch (err) {
-        throw new Error(`Could not reach the original message to refresh the video link (${err.message}). Was it deleted?`);
+        // A re-run can usually reuse the worker's cached copy, so keep the stored link and let the worker try.
+        if (!job.reuseFrom) {
+          const gone = [10003, 10008, 50001].includes(err.code); // unknown channel / unknown message / no access
+          if (gone) throw new Error('The original message with the video was deleted or I can no longer see it.');
+          throw Object.assign(new Error(`Discord didn't answer while refreshing the video link: ${err.message}`), { transient: true });
+        }
       }
     }
     return {
@@ -162,6 +167,7 @@ export class DiscordFront {
       if (!host || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(host.type)) {
         const p = o.guildId && this.store.guild(o.guildId).projects[o.projectName];
         host = p?.defaultChannelId ? await this.channel(p.defaultChannelId).catch(() => null) : null;
+        if (host && ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(host.type)) host = null;
         if (!host) throw userError('I can\'t open a review thread here. Use a text channel, or set a default channel for the project with `/debrief setup project`.');
         o.starter = null;
       }
@@ -241,11 +247,11 @@ export class DiscordFront {
   }
 
   onFailed(job, message) {
-    this.editProgress(job, { stage: 'failed', text: clip(`Review failed: ${message}`, 1800) }, { force: true });
+    this.editProgress(job, { stage: 'failed', text: clip(`Review failed: ${message}`, 1800) }, { force: true }).finally(() => this.progress.delete(job.id));
   }
 
   onExpired(job) {
-    this.editProgress(job, { stage: 'failed', text: 'Expired: no worker came online within 24 hours. Run `/review` again when your worker is up.' }, { force: true });
+    this.editProgress(job, { stage: 'failed', text: 'Expired: no worker came online within 24 hours. Run `/review` again when your worker is up.' }, { force: true }).finally(() => this.progress.delete(job.id));
   }
 
   async onResult(job, result) {
@@ -274,7 +280,7 @@ export class DiscordFront {
     const p = g?.projects[job.projectName];
     const b = (id, label, emoji, style = 2) => ({ type: 2, style, custom_id: `dbf:${id}:${job.id}`, label, emoji: { name: emoji } });
     const row = [b('rerun', 'Re-run', '🔁'), b('tx', 'Transcript', '📄')];
-    if (p?.tracker?.enabled) row.push(b('track', 'Send to tracker', '📌'));
+    if (p?.tracker?.enabled && !job.pool) row.push(b('track', 'Send to tracker', '📌'));
     if (!job.private) row.push(b('done', 'Done', '✅', 3));
     return { type: 1, components: row };
   }
@@ -293,7 +299,8 @@ export class DiscordFront {
       if (!err.user) this.log('interaction error', err);
       const content = err.user ? `⚠️ ${err.message}` : `❌ Something went wrong: ${clip(err.message, 1500)}`;
       try {
-        if (i.deferred || i.replied) await i.editReply({ content, embeds: [], components: [] });
+        if (i.deferred) await i.editReply({ content, embeds: [], components: [] });
+        else if (i.replied) await i.followUp({ content, flags: EPHEMERAL }); // e.g. after update(): don't overwrite the message
         else if (i.isRepliable()) await i.reply({ content, flags: EPHEMERAL });
       } catch {}
     }
@@ -563,6 +570,9 @@ export class DiscordFront {
       if (!isReviewer) throw userError(`Only ${job.userTag} can send this review to the tracker (it runs with their account).`);
       const p = g?.projects[job.projectName];
       if (!p?.tracker?.enabled) throw userError('Tracker export is not enabled for this project.');
+      if (job.pool || this.core.workers[job.workerId]?.userId !== job.userId) {
+        throw userError('This review ran on a pool worker. Send to tracker runs with the worker owner\'s own accounts, so it only works for reviews from your own worker.');
+      }
       await i.deferReply({ flags: EPHEMERAL });
       await i.editReply(`📌 Creating ${p.tracker.kind} tickets on your worker…`);
       const ch = await this.channel(job.threadId);
@@ -588,8 +598,12 @@ export class DiscordFront {
       this.store.putJob(job);
       const ch = i.channel;
       if (ch?.isThread?.()) {
-        await ch.send(`✅ Marked done by ${job.userTag}.`);
-        await ch.setArchived(true).catch(() => {});
+        try {
+          await ch.send(`✅ Marked done by ${job.userTag}.`);
+          await ch.setArchived(true);
+        } catch (err) {
+          this.log(`could not archive thread ${ch.id}: ${err.message}`);
+        }
       }
       return;
     }

@@ -112,7 +112,7 @@ export async function unlink() {
     return;
   }
   await new Promise((resolve) => {
-    const ws = new WebSocket(`${cfg.hubUrl.replace(/\/+$/, '')}/worker`);
+    const ws = new WebSocket(`${cfg.hubUrl.replace(/\/+$/, '').replace(/\/worker$/, '')}/worker`);
     const done = () => {
       ws.terminate();
       resolve();
@@ -121,15 +121,12 @@ export async function unlink() {
       console.log('Could not reach the hub; removing the local pairing only. Use /debrief forget in Discord to remove it on the hub.');
       done();
     }, 10_000);
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', token, name: cfg.workerName })));
+    // `unlink: true` drops the pairing without taking over (and requeuing) a worker that is running right now.
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', token, name: cfg.workerName, unlink: true })));
     ws.on('message', (d) => {
       const m = JSON.parse(d.toString());
-      if (m.type === 'welcome') {
-        ws.send(JSON.stringify({ type: 'unlink' }));
+      if (m.type === 'revoked') {
         console.log('Unpaired on the hub.');
-        clearTimeout(timer);
-        setTimeout(done, 300);
-      } else if (m.type === 'revoked') {
         clearTimeout(timer);
         done();
       }

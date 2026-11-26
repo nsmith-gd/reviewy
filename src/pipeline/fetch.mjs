@@ -1,10 +1,11 @@
 // Video sources (design §7): YouTube via yt-dlp, Google Drive by file id, Discord CDN, and direct https links
 // on the worker's allowlist. Every plain HTTP fetch refuses private and loopback addresses, redirects included.
 import { createWriteStream, existsSync, readdirSync, statSync } from 'node:fs';
-import { lookup } from 'node:dns/promises';
+import { lookup as dnsLookup } from 'node:dns';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { run } from '../util.mjs';
 
@@ -95,43 +96,102 @@ export function timeLink(source, t) {
 
 // ---- address safety -------------------------------------------------------------------------------
 
+function ipv4Private(ip) {
+  const [a, b] = ip.split('.').map(Number);
+  return (
+    a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) ||
+    (a === 198 && (b === 18 || b === 19)) || a >= 224
+  );
+}
+
+/** Expand an IPv6 address into 8 numeric groups (handles :: and a trailing dotted IPv4). */
+function ipv6Groups(ip) {
+  let v = ip.toLowerCase().split('%')[0];
+  const dotted = v.match(/(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const [a, b, c, d] = dotted[1].split('.').map(Number);
+    v = v.slice(0, -dotted[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = v.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail !== undefined && tail ? tail.split(':') : [];
+  const fill = tail !== undefined ? Array(8 - h.length - t.length).fill('0') : [];
+  return [...h, ...fill, ...t].map((g) => parseInt(g || '0', 16));
+}
+
+const v4From = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+
 export function isPrivateAddress(ip) {
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split('.').map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224
-    );
-  }
-  if (isIP(ip) === 6) {
-    const v = ip.toLowerCase();
-    if (v === '::' || v === '::1') return true;
-    const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateAddress(mapped[1]);
-    return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(v);
-  }
-  return true;
+  if (isIP(ip) === 4) return ipv4Private(ip);
+  if (isIP(ip) !== 6) return true;
+  const g = ipv6Groups(ip);
+  if (g.length !== 8 || g.some((x) => Number.isNaN(x))) return true;
+  const zeros5 = g.slice(0, 5).every((x) => x === 0);
+  if (zeros5 && g[5] === 0 && g[6] === 0 && g[7] <= 1) return true; // :: and ::1
+  if (zeros5 && (g[5] === 0xffff || g[5] === 0)) return ipv4Private(v4From(g[6], g[7])); // v4-mapped / v4-compatible
+  if (g[0] === 0x64 && g[1] === 0xff9b) return ipv4Private(v4From(g[6], g[7])); // NAT64
+  if (g[0] === 0x2002) return true; // 6to4 can tunnel to anything
+  if ((g[0] & 0xfe00) === 0xfc00) return true; // unique local fc00::/7
+  if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return true; // link-local, site-local
+  if ((g[0] & 0xff00) === 0xff00) return true; // multicast
+  return false;
 }
 
-async function assertPublicHost(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, '');
-  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
-  if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) {
-    throw new Error(`Refusing to download from ${hostname}: it resolves to a private or local address.`);
-  }
+/**
+ * DNS lookup used for the actual connection: the address that is checked is the address that is used,
+ * so a host can't pass the check with a public address and then connect to a private one (DNS rebinding).
+ */
+export function safeLookup(hostname, options, cb) {
+  dnsLookup(hostname, { ...options, all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) {
+      return cb(new Error(`Refusing to download from ${hostname}: it resolves to a private or local address.`));
+    }
+    if (options?.all) cb(null, addrs);
+    else cb(null, addrs[0].address, addrs[0].family);
+  });
 }
 
-/** fetch() that follows redirects by hand so every hop is checked against the allowlist and address rules. */
+function httpsGet(u, { signal, headers }) {
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host) && isPrivateAddress(host)) {
+    return Promise.reject(new Error(`Refusing to download from ${u.hostname}: it is a private or local address.`));
+  }
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(u, { method: 'GET', headers: { 'user-agent': 'debrief', ...headers }, lookup: safeLookup, signal }, (res) => {
+      resolve({
+        status: res.statusCode,
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        headers: { get: (k) => [res.headers[k.toLowerCase()]].flat()[0] ?? null },
+        stream: res,
+        cancel: () => res.destroy(),
+        text: async () => {
+          let out = '';
+          for await (const c of res) {
+            out += c;
+            if (out.length > 2e6) break;
+          }
+          res.destroy();
+          return out;
+        },
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/** GET that follows redirects by hand so every hop is checked against the allowlist and address rules. */
 export async function safeFetch(url, { allowedHosts = DEFAULT_ALLOWED_HOSTS, signal, headers, maxRedirects = 8 } = {}) {
   let current = url;
   for (let hop = 0; hop <= maxRedirects; hop++) {
     const u = new URL(current);
     if (u.protocol !== 'https:') throw new Error(`Refusing non-https URL: ${u.origin}`);
     if (!hostMatches(u.hostname, [...allowedHosts, ...GOOGLE_STORAGE])) throw new Error(`${u.hostname} is not on this worker's source allowlist.`);
-    await assertPublicHost(u.hostname);
-    const res = await fetch(u, { redirect: 'manual', signal, headers });
+    const res = await httpsGet(u, { signal, headers });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
-      await res.body?.cancel();
+      res.cancel();
       current = new URL(res.headers.get('location'), u).href;
       continue;
     }
@@ -142,28 +202,37 @@ export async function safeFetch(url, { allowedHosts = DEFAULT_ALLOWED_HOSTS, sig
 // Drive serves the bytes from these hosts after a redirect.
 const GOOGLE_STORAGE = ['googleusercontent.com', 'drive.usercontent.google.com'];
 
-async function saveResponse(res, out, { signal, onProgress, maxBytes }) {
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+async function saveResponse(res, out, { signal, onProgress, maxBytes, kind }) {
+  if (!res.ok) {
+    res.cancel();
+    if (kind === 'discord' && (res.status === 403 || res.status === 404)) {
+      throw new Error('The Discord attachment link has expired. Post the video as a message and use Apps → Review with Debrief on it, so the link can be refreshed.');
+    }
+    throw new Error(`Download failed: HTTP ${res.status}`);
+  }
   const total = Number(res.headers.get('content-length')) || 0;
-  if (maxBytes && total > maxBytes) throw new Error(`Video is ${(total / 1e9).toFixed(1)} GB, over this worker's limit.`);
+  if (maxBytes && total > maxBytes) {
+    res.cancel();
+    throw new Error(`Video is ${(total / 1e9).toFixed(1)} GB, over this worker's limit.`);
+  }
   let got = 0;
-  const counter = new TransformStream({
-    transform(chunk, ctrl) {
-      got += chunk.byteLength;
-      if (maxBytes && got > maxBytes) throw new Error('Video is over this worker\'s size limit.');
+  const counter = new Transform({
+    transform(chunk, _enc, cb) {
+      got += chunk.length;
+      if (maxBytes && got > maxBytes) return cb(new Error('Video is over this worker\'s size limit.'));
       if (total) onProgress?.(got / total);
-      ctrl.enqueue(chunk);
+      cb(null, chunk);
     },
   });
-  await pipeline(Readable.fromWeb(res.body.pipeThrough(counter)), createWriteStream(out), { signal });
+  await pipeline(res.stream, counter, createWriteStream(out), { signal });
   return out;
 }
 
 async function downloadDirect(url, dir, opts) {
   const res = await safeFetch(url, opts);
   const type = res.headers.get('content-type') || '';
-  if (/text\/html/i.test(type)) {
-    await res.body?.cancel();
+  if (res.ok && /text\/html/i.test(type)) {
+    res.cancel();
     throw new Error('That link points to a web page, not a video file.');
   }
   const name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'video');
@@ -172,19 +241,21 @@ async function downloadDirect(url, dir, opts) {
   return { file: out, title: name.replace(/\.\w{2,4}$/, '') };
 }
 
+const DRIVE_HELP = 'Google Drive did not return the file. Make sure it is shared as "Anyone with the link".';
+
 /** Link-shared Drive files, including the "can't scan for viruses" confirmation page for large files. */
 async function downloadDrive(id, dir, opts) {
   let res = await safeFetch(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`, opts);
   if (/text\/html/i.test(res.headers.get('content-type') || '')) {
     const html = await res.text();
     const form = html.match(/<form[^>]+action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/i);
-    if (!form) throw new Error('Google Drive did not return the file. Make sure it is shared as "Anyone with the link".');
+    if (!form) throw new Error(DRIVE_HELP);
     const action = new URL(form[1].replace(/&amp;/g, '&'), 'https://drive.usercontent.google.com/');
     for (const m of form[2].matchAll(/<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"/gi)) action.searchParams.set(m[1], m[2]);
     res = await safeFetch(action.href, opts);
     if (/text\/html/i.test(res.headers.get('content-type') || '')) {
-      await res.body?.cancel();
-      throw new Error('Google Drive did not return the file. Make sure it is shared as "Anyone with the link".');
+      res.cancel();
+      throw new Error(DRIVE_HELP);
     }
   }
   const cd = res.headers.get('content-disposition') || '';
@@ -194,7 +265,7 @@ async function downloadDrive(id, dir, opts) {
   return { file: out, title: fname.replace(/\.\w{2,4}$/, '') };
 }
 
-async function downloadYoutube(url, dir, { signal, onProgress, cfg = {} }) {
+async function downloadYoutube(url, dir, { signal, onProgress, cfg = {}, pool = false }) {
   const args = [
     '--no-playlist', '--no-warnings', '--newline', '--progress', '--no-simulate',
     '-f', 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
@@ -202,7 +273,8 @@ async function downloadYoutube(url, dir, { signal, onProgress, cfg = {} }) {
     '-o', join(dir, 'source.%(ext)s'),
     '--print', 'before_dl:TITLE:%(title)s',
   ];
-  if (cfg.youtubeCookiesFromBrowser) args.push('--cookies-from-browser', cfg.youtubeCookiesFromBrowser);
+  // Never use the worker owner's browser cookies for someone else's (pool) review.
+  if (cfg.youtubeCookiesFromBrowser && !pool) args.push('--cookies-from-browser', cfg.youtubeCookiesFromBrowser);
   args.push('--', url);
   let title = '';
   // yt-dlp downloads video and audio separately; track both as halves of the bar.
@@ -232,8 +304,9 @@ async function downloadYoutube(url, dir, { signal, onProgress, cfg = {} }) {
  * opts: {cfg, signal, onProgress, allowedHosts, maxBytes}
  */
 export async function fetchSource(source, dir, opts = {}) {
-  const allowedHosts = [...DEFAULT_ALLOWED_HOSTS, ...(opts.cfg?.allowedHosts || [])];
-  const o = { ...opts, allowedHosts, maxBytes: opts.cfg?.maxDownloadBytes || 8e9 };
+  // Pool reviews come from other people, so they only get the built-in hosts, not the owner's additions.
+  const allowedHosts = opts.pool ? DEFAULT_ALLOWED_HOSTS : [...DEFAULT_ALLOWED_HOSTS, ...(opts.cfg?.allowedHosts || [])];
+  const o = { ...opts, allowedHosts, kind: source.kind, maxBytes: opts.cfg?.maxDownloadBytes || 8e9 };
   switch (source.kind) {
     case 'youtube':
       return downloadYoutube(source.url, dir, o);

@@ -116,6 +116,8 @@ Leave out `-DGGML_CUDA=ON` without an NVIDIA GPU, or use `-DGGML_VULKAN=ON` for 
 
 **Sources:** YouTube (public and unlisted), Google Drive files shared as "anyone with the link", Discord attachments, and direct `https` links to video files on hosts you add to your worker's allowlist. YouTube timestamps link straight to the moment; Drive and Discord timestamps are plain text.
 
+**Uploads:** posting the video as a message and using **Apps → Review with Debrief** (or auto-review) is better than `/review file:`. Discord's attachment links expire, and only a message lets the hub refresh the link if the review waits in the queue or is re-run later.
+
 **`frames:off`** skips the picture and reviews the transcript only. It's much cheaper and fine for call recordings or talks over slides.
 
 **`private:true`** sends the review to your DMs. In DMs you can ask follow-ups without @mentioning.
@@ -218,6 +220,8 @@ These live in `~/.debrief/config.json`. Use `debrief config` to show them, or `d
 
 When it's enabled for a project, the reviewer's 📌 button makes their worker run Claude Code with **their own** MCP connectors. It creates one ticket per high-priority feedback item (or per the project's `priorities` setting), with the timestamp link, the intention and a link back to the thread. Tickets are created as the reviewer.
 
+It only works for reviews that ran on your own worker, not on a pool worker, because it acts with the worker owner's accounts.
+
 Each reviewer opts in on their own worker by listing exactly which tools that run may use. Run `claude mcp list` to see your servers. For example, with the Atlassian connector:
 
 ```bash
@@ -233,7 +237,7 @@ Add `"mcpConfig": "<path to an MCP config JSON>"` if the server isn't already co
 - **Where things live.** Videos, audio, frames and transcripts stay on the reviewer's machine. They are shared only with the reviewer's own Claude account and posted only as far as the server's settings say. The hub stores pairings, settings and the job queue in one JSON file. It never stores video or review text, and it never holds Claude, Google or YouTube credentials.
 - **Pairing tokens.** These are stored hashed on the hub. `/debrief forget` and `debrief unlink` revoke them.
 - **Prompt injection.** Review and follow-up runs get only the `Read` tool, limited to that job's frames folder, and no MCP servers. Text in the video that looks like instructions has nothing to act on. Tracker export is the only run that can write. It needs the reviewer's click, only uses the tools they listed, and only sees the structured feedback.
-- **URL fetching.** Workers download only from the allowlist, over https. They refuse private, loopback and link-local addresses, and check every redirect.
+- **URL fetching.** Pool workers never use their owner's YouTube cookies or extra allowed hosts for other people's reviews. Workers download only from the allowlist, over https. They refuse private, loopback and link-local addresses, and check every redirect.
 - **Authorization.** Workers only get jobs from the user they're paired to, or pool jobs if they opted in. Re-run, Send to tracker and Done are reviewer-only.
 
 ---
