@@ -9,8 +9,11 @@ function stamp(source, t) {
   return link ? `[${fmtTime(t)}](${link})` : `[${fmtTime(t)}]`;
 }
 
-export function transcriptFile(segments, { title = '', unreliable = false } = {}) {
-  const head = [title ? `Transcript: ${title}` : 'Transcript', unreliable ? 'Note: whisper repeated itself a lot; this transcript may be unreliable.' : '']
+export function transcriptFile(segments, { title = '', unreliable = false, issue = null } = {}) {
+  const note = issue === 'sparse'
+    ? 'Note: almost no speech was detected; these lines are probably whisper mishearing game audio, not commentary.'
+    : unreliable ? 'Note: whisper repeated itself a lot; this transcript may be unreliable.' : '';
+  const head = [title ? `Transcript: ${title}` : 'Transcript', note]
     .filter(Boolean)
     .join('\n');
   const body = segments.map((s) => `[${fmtTime(s.start)}] ${s.text}`).join('\n');

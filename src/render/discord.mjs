@@ -85,7 +85,9 @@ export function summaryEmbed(review, meta) {
     .join(' · ');
   const notes = [];
   if (!review.commentaryUsable) notes.push('⚠️ Commentary missing or unusable; notes lean on the picture.');
-  if (meta.transcriptUnreliable) notes.push('⚠️ The transcript repeated itself a lot and may be unreliable.');
+  if (meta.transcriptIssue === 'sparse') {
+    notes.push(`⚠️ Almost no speech was heard${meta.transcriptWords != null ? ` (${meta.transcriptWords} words)` : ''}. If you were talking, check the recording includes your microphone. Run \`debrief transcribe <link>\` on your worker to diagnose.`);
+  } else if (meta.transcriptUnreliable) notes.push('⚠️ The transcript repeated itself a lot and may be unreliable.');
   if (meta.noWhisper) notes.push('⚠️ No transcript: whisper.cpp is not installed on the worker.');
   if (meta.pool) notes.push(`Reviewed by pool worker ${meta.workerName || ''}`.trim());
   return {

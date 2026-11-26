@@ -87,6 +87,16 @@ Keep the worker running while you want reviews. It reconnects on its own, and re
 - **Windows:** `schtasks /create /tn "Debrief worker" /tr "cmd /c debrief worker" /sc onlogon`
 - **macOS/Linux:** run it under `pm2`, or on Linux use `deploy/debrief-worker.service` (instructions are in the file).
 
+### If a transcript comes back as nonsense
+
+Run this on your worker machine with the same link:
+
+```bash
+debrief transcribe https://www.youtube.com/watch?v=...
+```
+
+It prints the audio levels, then runs Whisper with and without voice detection and shows what each heard. It ends with a likely cause: no microphone in the recording, voice detection dropping your speech, or names that belong in the glossary. Quest captures only include your voice if the microphone was on when recording started.
+
 ### Linux: building whisper.cpp
 
 ```bash
@@ -204,6 +214,7 @@ These live in `~/.debrief/config.json`. Use `debrief config` to show them, or `d
 | `speechAnchoredFrames` | `true` | Set to `false` to use only Ballast's even spread |
 | `longVideoMinutes` | `30` | Longer videos are split into chapters at silences and merged |
 | `chapterLength` | `900` | Target chapter length, in seconds |
+| `whisperVad` | `true` | Silero voice detection before Whisper. Turn it off if it drops your speech under loud game audio (`debrief transcribe` tells you). |
 | `language` | `en` | Whisper language when the project doesn't set one |
 | `whisperDir` / `whisperCli` / `whisperModel` | auto | Override where whisper.cpp and the model are found |
 | `cacheRetentionDays` | `14` | How long frames and transcripts are kept for follow-ups and re-runs. Videos are deleted as soon as the review posts. |

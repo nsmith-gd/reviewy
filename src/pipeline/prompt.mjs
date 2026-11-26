@@ -17,7 +17,7 @@ function projectBlock(project = {}) {
  * The main review prompt. The reviewer's spoken commentary carries the most weight; the picture supports it.
  * frames: [{name, t}] (empty in transcript-only mode). range: {start, end} when reviewing one chapter.
  */
-export function reviewPrompt({ context = '', project = {}, departments, segments = [], frames = [], framesDir = '', duration = 0, title = '', unreliable = false, range = null, reviewer = '' }) {
+export function reviewPrompt({ context = '', project = {}, departments, segments = [], frames = [], framesDir = '', duration = 0, title = '', unreliable = false, transcriptIssue = null, range = null, reviewer = '' }) {
   const parts = [];
   parts.push(`You are turning a recorded video review into structured notes for a game development team.
 ${reviewer ? `The reviewer is ${reviewer}. ` : ''}They recorded themselves talking over ${title ? `"${title}"` : 'a build, a playtest or someone\'s work'}${duration ? ` (${fmtTime(duration)} long)` : ''}.${range ? `\nYou are reviewing one chapter of a longer video: ${fmtTime(range.start)} to ${fmtTime(range.end)}. Use times measured from the start of the whole video.` : ''}`);
@@ -51,7 +51,12 @@ ${frames.map((f) => `${f.name} @ ${fmtTime(f.t)}`).join('\n')}`);
   }
 
   const tx = transcriptText(segments);
-  parts.push(`## Transcript (whisper.cpp, local)${unreliable ? '\nWarning: this transcript repeats itself a lot and may be unreliable. Lean on the frames and be conservative.' : ''}
+  const warning = transcriptIssue === 'sparse'
+    ? '\nWarning: almost no speech was detected for the length of this video. The few lines below are probably whisper mishearing game audio or music, not the reviewer. Unless they clearly make sense together, set commentaryUsable to false, do not build items on them, and say in the summary that no commentary was heard.'
+    : unreliable
+      ? '\nWarning: this transcript repeats itself a lot and may be unreliable. Lean on the frames and be conservative.'
+      : '';
+  parts.push(`## Transcript (whisper.cpp, local)${warning}
 ${tx || '(no speech was detected)'}`);
 
   parts.push('Return the structured review.');

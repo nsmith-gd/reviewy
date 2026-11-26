@@ -14,6 +14,7 @@ export const WORKER_DEFAULTS = {
   longVideoMinutes: 30,
   chapterLength: 900,
   whisperDir: '',
+  whisperVad: true,
   language: 'en',
   cacheRetentionDays: 14,
   maxConcurrentJobs: 1,
