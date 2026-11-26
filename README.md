@@ -102,16 +102,6 @@ debrief transcribe https://www.youtube.com/watch?v=...
 
 It prints the audio levels, then runs Whisper with and without voice detection and shows what each heard. It ends with a likely cause: no microphone in the recording, voice detection dropping your speech, or names that belong in the glossary. Quest captures only include your voice if the microphone was on when recording started.
 
-### If a transcript comes back as nonsense
-
-Run this on your worker machine with the same link:
-
-```bash
-debrief transcribe https://www.youtube.com/watch?v=...
-```
-
-It prints the audio levels, then runs Whisper with and without voice detection and shows what each heard. It ends with a likely cause: no microphone in the recording, voice detection dropping your speech, or names that belong in the glossary. Quest captures only include your voice if the microphone was on when recording started.
-
 ### Linux: building whisper.cpp
 
 ```bash
