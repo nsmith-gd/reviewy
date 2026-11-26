@@ -76,3 +76,17 @@ test('a worker steps aside when another worker with the same pairing connects', 
   b.stop();
   await core.close();
 });
+
+test('install explains what is missing instead of starting a worker that quits', async () => {
+  const { preflight } = await import('../src/service.mjs');
+  const { saveConfig, saveHubConfig } = await import('../src/config.mjs');
+  saveConfig({ hubUrl: undefined, tokens: {} });
+  assert.match(preflight({ solo: false }), /debrief service install --solo/);
+  assert.match(preflight({ solo: true }), /debrief solo --token/);
+  saveHubConfig({ discordToken: 'x' });
+  assert.equal(preflight({ solo: true }), null);
+  saveConfig({ hubUrl: 'wss://hub.example' });
+  assert.match(preflight({ solo: false }), /isn't paired/);
+  saveConfig({ tokens: { 'wss://hub.example': 'id.secret' } });
+  assert.equal(preflight({ solo: false }), null);
+});

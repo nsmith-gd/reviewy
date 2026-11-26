@@ -5,6 +5,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, ren
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadConfig, loadHubConfig } from './config.mjs';
 import { debriefHome, sleep } from './util.mjs';
 
 const P = process.platform;
@@ -189,26 +190,72 @@ export async function startService() {
   return pid;
 }
 
+/**
+ * Problems that would make a background worker quit at once, where nobody can see why. Returns a message or null.
+ */
+export function preflight({ solo = false } = {}) {
+  if (solo) {
+    if (!loadHubConfig().discordToken) return 'Solo mode has no bot token yet. Run `debrief solo --token <bot token>` once in this window first, then run this again.';
+    return null;
+  }
+  const cfg = loadConfig();
+  if (!cfg.hubUrl) {
+    return 'No team hub is set for this worker.\n  • Using your own bot (solo mode)? Run:  debrief service install --solo\n  • Joining a team hub? Run  debrief worker --hub wss://<hub address>  once, pair it with /debrief link, then run this again.';
+  }
+  if (!(cfg.tokens?.[cfg.hubUrl] || cfg.token)) {
+    return `This worker isn't paired with ${cfg.hubUrl} yet, and in the background you couldn't see the pairing code.\n  Run  debrief worker  once in this window, use /debrief link code:<code> in Discord, then press Ctrl+C and run this again.`;
+  }
+  return null;
+}
+
+function logSince(offset) {
+  try {
+    const size = statSync(logPath()).size;
+    const fd = openSync(logPath(), 'r');
+    const len = Math.min(size - offset, 16 * 1024);
+    const buf = Buffer.alloc(Math.max(0, len));
+    if (len > 0) readSync(fd, buf, 0, len, size - len);
+    closeSync(fd);
+    return buf.toString('utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 export async function installService({ solo = false } = {}) {
+  const problem = preflight({ solo });
+  if (problem) throw new Error(problem);
   const file = servicePaths()[P] || servicePaths().linux;
   await stopService({ quiet: true });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, serviceFile(P === 'win32' || P === 'darwin' ? P : 'linux', { args: [solo ? 'solo' : 'worker'] }));
   if (P === 'linux') sh('systemctl', ['--user', 'daemon-reload']);
-  const pid = await startService();
+  let offset = 0;
+  try {
+    offset = statSync(logPath()).size;
+  } catch {}
+  let pid;
+  try {
+    pid = await startService();
+  } catch (err) {
+    // Don't leave a launcher behind that fails silently at every login.
+    await uninstallService({ quiet: true });
+    const log = logSince(offset);
+    throw new Error(`The background worker stopped straight after starting, so I removed it again.${log ? `\nIt said:\n${log.split('\n').slice(-12).map((l) => `  ${l}`).join('\n')}` : `\nNothing was written to ${logPath()}. Try running  debrief ${solo ? 'solo' : 'worker'}  in this window to see the error.`}`);
+  }
   console.log(`✅ Debrief ${solo ? 'solo mode' : 'worker'} is running in the background (process ${pid}) and will start at login.`);
   console.log(`   You can close this window. Log: ${logPath()}`);
   console.log('   debrief service status · debrief service stop · debrief service uninstall');
   if (P === 'linux') console.log('   To keep it running while you are logged out: loginctl enable-linger $USER');
 }
 
-export async function uninstallService() {
+export async function uninstallService({ quiet = false } = {}) {
   await stopService({ quiet: true });
   const file = servicePaths()[P] || servicePaths().linux;
   if (P === 'linux' && existsSync(file)) spawnSync('systemctl', ['--user', 'disable', 'debrief-worker']);
   rmSync(file, { force: true });
   if (P === 'linux') spawnSync('systemctl', ['--user', 'daemon-reload']);
-  console.log('Removed the background worker. It will no longer start at login.');
+  if (!quiet) console.log('Removed the background worker. It will no longer start at login.');
 }
 
 export function serviceStatus() {
