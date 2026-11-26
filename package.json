@@ -1,0 +1,28 @@
+{
+  "name": "debrief",
+  "version": "0.1.0",
+  "description": "Video review notes in Discord, produced by each reviewer's own Claude Code and Whisper.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "debrief": "bin/debrief.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start:hub": "node bin/debrief.mjs hub",
+    "start:worker": "node bin/debrief.mjs worker"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "docs"
+  ],
+  "dependencies": {
+    "discord.js": "^14.28.1",
+    "ws": "^8.23.0"
+  }
+}
