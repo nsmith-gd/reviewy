@@ -6,6 +6,7 @@ import { HubCore } from './hub/core.mjs';
 import { DiscordFront } from './hub/discord.mjs';
 import { Store } from './hub/store.mjs';
 import { Worker } from './worker/worker.mjs';
+import { claimSingleInstance, logToFile } from './service.mjs';
 import { debriefHome } from './util.mjs';
 
 function buildHub({ dataFile, hubCfg }) {
@@ -48,19 +49,24 @@ export async function startHub(opts = {}) {
 }
 
 export async function startWorker(opts = {}) {
+  if (opts.log) logToFile(opts.log);
+  claimSingleInstance('worker');
   const patch = {};
   if (opts.hub) patch.hubUrl = opts.hub;
   if (opts.name) patch.workerName = opts.name;
   const cfg = Object.keys(patch).length ? saveConfig(patch) : loadConfig();
   if (!cfg.hubUrl) throw new Error('No hub URL. Run: debrief worker --hub wss://<your team\'s hub>   (ask whoever runs your hub), or use `debrief solo`.');
-  const worker = new Worker({ hubUrl: cfg.hubUrl, cfg });
+  const worker = new Worker({ hubUrl: cfg.hubUrl, cfg, onReplaced: () => setTimeout(() => process.exit(0), 200) });
   await worker.start();
   console.log(`[worker] ${cfg.workerName} → ${cfg.hubUrl}`);
+  if (!opts.log) console.log('[worker] This stops when you close this window. To run it in the background and at login: debrief service install');
   onShutdown(() => worker.stop());
 }
 
 /** Solo mode (design §4): the hub and a worker in one process, with the user's own bot token. */
 export async function startSolo(opts = {}) {
+  if (opts.log) logToFile(opts.log);
+  claimSingleInstance('solo');
   if (opts.token) saveHubConfig({ discordToken: opts.token });
   const hubCfg = loadHubConfig();
   if (!hubCfg.discordToken) throw new Error('No Discord bot token. Run `debrief solo --token <token>` once (see README: "Create your Discord bot").');
@@ -96,6 +102,7 @@ export async function startSolo(opts = {}) {
   });
   await worker.start();
   await front.start(hubCfg.discordToken);
+  if (!opts.log) console.log('[solo] This stops when you close this window. To run it in the background and at login: debrief service install --solo');
   onShutdown(async () => {
     worker.stop();
     await front.destroy();

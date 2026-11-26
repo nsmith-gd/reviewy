@@ -82,10 +82,15 @@ debrief worker --hub wss://debrief.example.com
 
 The first time, it prints a six-character code. In any Discord server the bot is in, run `/debrief link code:K4P9QX`. That's it: run `/review` with a link.
 
-Keep the worker running while you want reviews. It reconnects on its own, and reviews queue for up to 24 hours while it's offline. To start it at login:
+`debrief worker` runs in that terminal window, so closing the window stops it. Once it's paired, run it in the background instead:
 
-- **Windows:** `schtasks /create /tn "Debrief worker" /tr "cmd /c debrief worker" /sc onlogon`
-- **macOS/Linux:** run it under `pm2`, or on Linux use `deploy/debrief-worker.service` (instructions are in the file).
+```bash
+debrief service install
+```
+
+It runs with no window, starts again every time you log in, and writes to `~/.debrief/worker.log`. Use `debrief service status` to check on it, `debrief logs` to read the log, and `debrief service stop` or `debrief service uninstall` to stop it. In solo mode, use `debrief service install --solo`.
+
+Run only one worker per pairing. A second copy on the same machine refuses to start, and a worker that sees another worker take over its pairing stops instead of fighting for the connection. Reviews queue for up to 24 hours while your worker is offline.
 
 ### If a transcript comes back as nonsense
 
