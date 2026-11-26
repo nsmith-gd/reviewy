@@ -1,0 +1,25 @@
+# Hub + Caddy for automatic HTTPS. Workers connect to wss://$DEBRIEF_DOMAIN
+#   DISCORD_TOKEN=... DEBRIEF_DOMAIN=debrief.example.com docker compose up -d
+services:
+  hub:
+    build: .
+    restart: unless-stopped
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN}
+      DEBRIEF_MESSAGE_CONTENT: ${DEBRIEF_MESSAGE_CONTENT:-true}
+    volumes:
+      - hub-data:/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEBRIEF_DOMAIN: ${DEBRIEF_DOMAIN:?set DEBRIEF_DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  hub-data:
+  caddy-data:
