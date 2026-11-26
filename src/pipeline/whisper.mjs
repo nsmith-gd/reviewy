@@ -85,11 +85,16 @@ export function isNoiseLine(text) {
   return !t || NOISE.some((re) => re.test(t));
 }
 
+// Normal narration runs at 100–160 words a minute. Far below this, the "speech" is usually whisper
+// hallucinating words from game audio or music (e.g. a capture without the reviewer's mic).
+export const SPARSE_WPM = 15;
+
 /**
  * Apply the guards: drop stock noise lines, then flag the transcript unreliable when more than 30% of the
- * remaining lines are repeats (whisper's classic loop failure).
+ * remaining lines are repeats (whisper's classic loop failure), or when there is almost no speech for the
+ * length of the video. issue: 'repeats' | 'sparse' | null.
  */
-export function guardTranscript(segments) {
+export function guardTranscript(segments, { duration = 0 } = {}) {
   const kept = segments.filter((s) => !isNoiseLine(s.text)).map((s) => ({ ...s, text: s.text.trim() }));
   const seen = new Map();
   let repeats = 0;
@@ -100,7 +105,11 @@ export function guardTranscript(segments) {
     seen.set(key, true);
   }
   const ratio = kept.length ? repeats / kept.length : 0;
-  return { segments: kept, unreliable: kept.length >= 5 && ratio > 0.3, repeatRatio: ratio };
+  const words = kept.reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0);
+  const wpm = duration > 0 ? words / (duration / 60) : null;
+  const repeated = kept.length >= 5 && ratio > 0.3;
+  const sparse = duration >= 60 && wpm < SPARSE_WPM;
+  return { segments: kept, unreliable: repeated || sparse, issue: repeated ? 'repeats' : sparse ? 'sparse' : null, repeatRatio: ratio, words, wpm };
 }
 
 /** Build whisper's initial prompt from the project glossary and the reviewer's context line. */
@@ -129,13 +138,14 @@ export function parseWhisperJson(json) {
  * Transcribe a 16 kHz mono WAV. Returns {segments, unreliable, language}.
  * Uses Silero VAD when the model is installed, which removes most hallucinated filler in silences.
  */
-export async function transcribe(wavPath, outBase, { cfg = {}, language = 'en', prompt = '', signal, onProgress } = {}) {
+export async function transcribe(wavPath, outBase, { cfg = {}, language = 'en', prompt = '', signal, onProgress, duration = 0, vad = cfg.whisperVad !== false } = {}) {
   const w = await locateWhisper(cfg);
   if (!w.cli || !w.model) throw new Error('whisper.cpp is not installed (whisper-cli or a ggml model is missing). Run `debrief doctor`.');
   const args = ['-m', w.model, '-f', wavPath, '-l', language || 'auto', '-oj', '-of', outBase, '-pp', '-np'];
   if (cfg.whisperThreads) args.push('-t', String(cfg.whisperThreads));
   if (prompt) args.push('--prompt', prompt);
-  if (w.vad) args.push('--vad', '--vad-model', w.vad);
+  const useVad = Boolean(w.vad && vad);
+  if (useVad) args.push('--vad', '--vad-model', w.vad);
   await run(w.cli, args, {
     signal,
     onLine: (line) => {
@@ -144,6 +154,6 @@ export async function transcribe(wavPath, outBase, { cfg = {}, language = 'en', 
     },
   });
   const json = JSON.parse(readFileSync(`${outBase}.json`, 'utf8'));
-  const guarded = guardTranscript(parseWhisperJson(json));
-  return { ...guarded, language: json?.result?.language || language, model: w.model.replace(/^.*[\\/]/, ''), vad: Boolean(w.vad) };
+  const guarded = guardTranscript(parseWhisperJson(json), { duration });
+  return { ...guarded, language: json?.result?.language || language, model: w.model.replace(/^.*[\\/]/, ''), vad: useVad };
 }

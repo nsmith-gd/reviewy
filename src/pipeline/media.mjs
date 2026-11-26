@@ -14,16 +14,32 @@ export async function probe(file, { signal } = {}) {
     duration,
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
+    audioStreams: streams.filter((s) => s.codec_type === 'audio').length,
     width: video?.width || 0,
     height: video?.height || 0,
     title: info.format?.tags?.title || '',
   };
 }
 
-/** 16 kHz mono 16-bit WAV, what whisper.cpp wants. */
-export async function extractAudio(file, out, { signal } = {}) {
-  await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out], { signal });
+/**
+ * 16 kHz mono 16-bit WAV, what whisper.cpp wants. When the file has several audio tracks (e.g. game audio and
+ * the mic recorded separately), they are mixed so the reviewer's voice isn't lost.
+ */
+export async function extractAudio(file, out, { signal, audioStreams = 1 } = {}) {
+  const mix = audioStreams > 1
+    ? ['-filter_complex', `${Array.from({ length: audioStreams }, (_, i) => `[0:a:${i}]`).join('')}amix=inputs=${audioStreams}:normalize=0[a]`, '-map', '[a]']
+    : ['-vn'];
+  await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, ...mix, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out], { signal });
   return out;
+}
+
+/** Loudness and how much of the audio is above a silence threshold (for diagnostics). */
+export async function audioStats(wav, { signal, noiseDb = -40 } = {}) {
+  const { stderr } = await run('ffmpeg', ['-hide_banner', '-nostats', '-i', wav, '-af', `volumedetect,silencedetect=noise=${noiseDb}dB:d=0.5`, '-f', 'null', '-'], { signal });
+  const num = (re) => Number((stderr.match(re) || [])[1]);
+  let silent = 0;
+  for (const m of stderr.matchAll(/silence_duration:\s*([\d.]+)/g)) silent += Number(m[1]);
+  return { meanDb: num(/mean_volume:\s*(-?[\d.]+) dB/), maxDb: num(/max_volume:\s*(-?[\d.]+) dB/), silentSeconds: silent };
 }
 
 /** Grab one frame at time t, scaled to 960px wide, JPEG quality 4 (Ballast's settings). */

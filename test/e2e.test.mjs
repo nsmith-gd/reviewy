@@ -202,3 +202,14 @@ test('forget unpairs and deletes the user\'s records; the worker gets a new code
   await waitFor(() => newCode, { timeoutMs: 10_000 });
   assert.equal(loadConfig().tokens.e2e, undefined, 'the revoked token was removed');
 });
+
+test('audio from every track is mixed (mic on a second track is not lost)', async () => {
+  const { extractAudio, probe, audioStats } = await import('../src/pipeline/media.mjs');
+  const two = join(TMP, 'two.mkv');
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=3', '-t', '3', '-map', '0:a', '-map', '1:a', '-c:a', 'pcm_s16le', two]);
+  const info = await probe(two);
+  assert.equal(info.audioStreams, 2);
+  const wav = await extractAudio(two, join(TMP, 'two.wav'), { audioStreams: info.audioStreams });
+  const st = await audioStats(wav);
+  assert.ok(st.maxDb > -20, `second track is audible (peak ${st.maxDb} dB)`);
+});

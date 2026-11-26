@@ -2,6 +2,7 @@
 // Debrief CLI.
 import { parseArgs } from 'node:util';
 import { configPath, loadConfig, saveConfig } from '../src/config.mjs';
+import { diagnoseTranscript } from '../src/diagnose.mjs';
 import { doctor, installWhisper } from '../src/doctor.mjs';
 import { startHub, startSolo, startWorker, unlink } from '../src/run.mjs';
 import { VERSION } from '../src/version.mjs';
@@ -14,6 +15,8 @@ Usage:
   debrief hub [--token <bot token>] [--port N]   Run the team hub (Discord bot + worker server)
   debrief doctor [--deep]                        Check dependencies (--deep also tests the Claude login)
   debrief whisper install [--model <name>]       Download whisper.cpp model + VAD (and whisper.cpp on Windows)
+  debrief transcribe <link|file> [--glossary a,b] [--language en] [--keep]
+                                                 Diagnose a bad transcript: audio levels, Whisper with/without VAD
   debrief config [key] [value]                   Show or change a worker setting
   debrief unlink                                 Unpair this worker from its hub
 
@@ -58,6 +61,12 @@ try {
       const { values, positionals } = opts({ model: { type: 'string' }, 'no-vad': { type: 'boolean' } });
       if (positionals[0] !== 'install') throw new Error('Usage: debrief whisper install [--model large-v3-turbo-q8_0|small|base…] [--no-vad]');
       await installWhisper({ model: values.model, vad: !values['no-vad'] });
+      break;
+    }
+    case 'transcribe': {
+      const { values, positionals } = opts({ language: { type: 'string' }, glossary: { type: 'string' }, keep: { type: 'boolean' } });
+      if (!positionals[0]) throw new Error('Usage: debrief transcribe <youtube link | drive link | video file>');
+      await diagnoseTranscript(positionals[0], { language: values.language, glossary: (values.glossary || '').split(',').map((x) => x.trim()).filter(Boolean), keep: values.keep });
       break;
     }
     case 'config': {

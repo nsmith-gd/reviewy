@@ -204,3 +204,18 @@ test('IPv6 private ranges and pinned-lookup refusal', async () => {
   await assert.rejects(safeFetch('https://evil.example/x.mp4'), /allowlist/);
   await assert.rejects(safeFetch('http://youtube.com/x'), /non-https/);
 });
+
+test('sparse transcripts (no real commentary) are flagged', () => {
+  const quest = [
+    { start: 38, end: 39, text: "I'm neck" }, { start: 70, end: 71, text: 'Erin' }, { start: 118, end: 119, text: 'Dasher' },
+    { start: 148, end: 149, text: 'Pumetschka' }, { start: 221, end: 222, text: 'Woah shit' }, { start: 222, end: 223, text: 'P-U-I-L-T-O-P-O' },
+  ];
+  const g = guardTranscript(quest, { duration: 240 });
+  assert.equal(g.issue, 'sparse');
+  assert.equal(g.unreliable, true);
+  const talky = Array.from({ length: 40 }, (_, i) => ({ start: i * 6, end: i * 6 + 5, text: `this is sentence number ${i} about the archers in camp three` }));
+  assert.equal(guardTranscript(talky, { duration: 240 }).issue, null);
+  assert.equal(guardTranscript(quest.slice(0, 1), { duration: 30 }).issue, null, 'short clips are not judged');
+  const p = reviewPrompt({ departments: ['a'], segments: quest, transcriptIssue: 'sparse', duration: 240 });
+  assert.match(p, /set commentaryUsable to false/);
+});

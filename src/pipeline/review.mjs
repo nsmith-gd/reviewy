@@ -94,12 +94,13 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
       const w = await locateWhisper(cfg);
       if (w.cli && w.model) {
         progress('transcribing', { pct: 0 });
-        const wav = await extractAudio(videoFile, join(dir, 'audio.wav'), { signal });
+        const wav = await extractAudio(videoFile, join(dir, 'audio.wav'), { signal, audioStreams: info.audioStreams });
         tx = await transcribe(wav, join(dir, 'whisper'), {
           cfg,
           language: project.language || cfg.language || 'en',
           prompt: whisperPrompt({ glossary: project.glossary, context: job.context, projectName: project.name }),
           signal,
+          duration: info.duration,
           onProgress: (pct) => progress('transcribing', { pct }),
         });
         segments = tx.segments;
@@ -108,7 +109,7 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
         noWhisper = true;
       }
     }
-    writeJson(join(dir, 'transcript.json'), { segments, info: { unreliable: tx.unreliable, language: tx.language, model: tx.model, vad: tx.vad } });
+    writeJson(join(dir, 'transcript.json'), { segments, info: { unreliable: tx.unreliable, issue: tx.issue || null, words: tx.words, wpm: tx.wpm, language: tx.language, model: tx.model, vad: tx.vad } });
 
     // 3. Frames
     if (wantFrames && info.hasVideo) {
@@ -129,7 +130,7 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
   const chapters = longVideo(duration, cfg) ? splitChapters(duration, segments, { targetLen: cfg.chapterLength || 15 * 60 }) : [{ start: 0, end: duration }];
   const frameNames = new Set(frames.map((f) => f.name));
   const model = job.model || cfg.model || 'sonnet';
-  const base = { context: job.context, project, departments, framesDir, duration, title, unreliable: tx.unreliable, reviewer: job.reviewer };
+  const base = { context: job.context, project, departments, framesDir, duration, title, unreliable: tx.unreliable, transcriptIssue: tx.issue, reviewer: job.reviewer };
   let review;
   let runInfo;
   const reviewRange = async (range, label) => {
@@ -186,6 +187,8 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
     profile: runInfo?.profile,
     costUsd: runInfo?.costUsd,
     transcriptUnreliable: tx.unreliable,
+    transcriptIssue: tx.issue || (tx.unreliable ? 'repeats' : null),
+    transcriptWords: tx.words,
     whisperModel: tx.model,
     noWhisper,
     chapters: chapters.length,
@@ -193,7 +196,7 @@ export async function reviewOne(job, { cfg = {}, progress = () => {}, signal } =
   };
   writeJson(join(dir, 'review.json'), review);
   writeJson(join(dir, 'meta.json'), meta);
-  const transcript = transcriptFile(segments, { title, unreliable: tx.unreliable });
+  const transcript = transcriptFile(segments, { title, unreliable: tx.unreliable, issue: tx.issue });
   const markdown = reviewMarkdown(review, meta);
   writeFileSync(join(dir, 'transcript.txt'), transcript);
   writeFileSync(join(dir, 'review.md'), markdown);
